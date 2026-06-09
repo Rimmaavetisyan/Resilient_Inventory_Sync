@@ -134,7 +134,14 @@ export function useApiWithRetry(url, options = {}) {
             throw err;
           }
 
-          const data = await res.json();
+          let data;
+          try {
+            data = await res.json();
+          } catch (parseErr) {
+            const err = new Error(`JSON parse error: ${parseErr.message}`);
+            err.status = 422;
+            throw err;
+          }
           safeSet({
             status: 'success',
             data,
@@ -150,7 +157,7 @@ export function useApiWithRetry(url, options = {}) {
           if (!canRetry) {
             if (isBackground) {
               // Keep the last good data on screen; flag the failed refresh softly.
-              safeSet((s) => ({ ...s, isRefreshing: false, error: err }));
+              safeSet((s) => ({ ...s, isRefreshing: false, error: err, attempt }));
               log.warn(
                 { attempt: attempt + 1, status: err.status ?? null, error: err.message },
                 'background_refresh_failed'
@@ -177,7 +184,7 @@ export function useApiWithRetry(url, options = {}) {
           // Foreground retries surface as "loading (retry N)"; background
           // retries stay quiet — the old data is still visible.
           if (!isBackground) {
-            safeSet((s) => ({ ...s, status: 'loading', attempt }));
+            safeSet((s) => ({ ...s, status: 'loading', data: null, attempt }));
           }
           log.warn(
             {
