@@ -1,0 +1,13 @@
+{
+  "name": "mock-microservices",
+  "version": "1.0.0",
+  "description": "Flaky mock backend (Shipments, Fleet, Weather) for the Resilient Dashboard demo.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

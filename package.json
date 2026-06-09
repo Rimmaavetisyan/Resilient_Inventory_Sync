@@ -1,0 +1,15 @@
+{
+  "name": "resilient-systems",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Two resilient systems (inventory sync + dashboard) plus a flaky mock backend.",
+  "scripts": {
+    "install:all": "npm --prefix mock-backend install && npm --prefix task2-dashboard install && npm --prefix task1-inventory-sync install",
+    "mock": "npm --prefix mock-backend start",
+    "dashboard": "npm --prefix task2-dashboard run dev",
+    "demo": "concurrently -n mock,dashboard -c green,cyan \"npm:mock\" \"npm:dashboard\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
