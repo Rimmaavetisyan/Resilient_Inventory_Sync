@@ -1,69 +1,182 @@
-Resilient Inventory Sync & Dashboard
+# Resilient Inventory Sync & Dashboard
 
-This project is split into two tasks. Task 1 is a backend Node.js service that periodically syncs product inventory from a warehouse API into a PostgreSQL database. Task 2 is a React dashboard that displays live data from three microservices: Shipments, Fleet, and Weather. Both tasks are designed around a core problem — the APIs they depend on are unreliable and return errors frequently. The solution to that problem is the same in both: exponential backoff with retry logic, structured logging, and correlation IDs to trace what happened across the system.
+This project is split into two tasks.
 
-The Problem
+- **Task 1** — a backend Node.js service that periodically syncs product inventory from a warehouse API into a PostgreSQL database.
+- **Task 2** — a React dashboard that displays live data from three microservices: Shipments, Fleet, and Weather.
 
-Real-world APIs fail. A warehouse API returning a 503 Service Unavailable error is not a crash — it is a temporary condition that should be retried. A dashboard panel that goes blank because one microservice is slow is bad user experience. The engineering challenge is building systems that handle failure gracefully without the developer needing to write special-case code everywhere.
+Both tasks are built around the same core problem: the APIs they depend on are unreliable and return errors frequently. The solution is the same in both — exponential backoff with retry logic, structured logging, and correlation IDs to trace what happened across the system.
 
-Task 1 — How It Works
+---
 
-The service starts and immediately runs a sync. Every 30 seconds after that, it runs again. Each sync cycle works like this:
+## The Problem
 
-First, it generates a UUID called a correlation ID. This ID will be attached to every log line and every outgoing HTTP request header for this sync, so you can search your logs for that one ID and see the full story of what happened.
+Real-world APIs fail. A warehouse API returning a `503 Service Unavailable` is not a crash — it is a temporary condition that should be retried. A dashboard panel that goes blank because one microservice is slow is bad user experience. The engineering challenge is building systems that handle failure gracefully without writing special-case code everywhere.
 
-Next, it calls the warehouse API using an HTTP client built on axios. The HTTP client wraps every request in retry logic. If the API returns a 503 or 429, it waits and tries again. The waiting time follows an exponential backoff formula: the first retry waits 200 milliseconds, the second waits 400, the third waits 800, and so on up to a maximum of 10 seconds. A small amount of randomness called jitter is added to each delay so that if multiple instances of the service are running at the same time, they do not all retry at the exact same moment and overwhelm the API again.
+---
 
-If the API returns a 4xx error like 400 or 404, the service does not retry. A bad request will not fix itself.
+## How It Works
 
-Once the data arrives, it is normalized. The warehouse API is inconsistent — sometimes it returns a bare array, sometimes it wraps it in an object, sometimes it uses the field name "stock" instead of "quantity". The normalization step handles all of these variations and filters out any rows with missing or invalid data.
+### Task 1 — Inventory Sync Service
 
-The cleaned data is then written to PostgreSQL in a single bulk transaction. All rows are upserted in one SQL query — if a SKU already exists, its quantity is updated; if it is new, it is inserted. The entire operation runs inside a BEGIN/COMMIT block so that if anything fails, the database rolls back to its previous state and no partial data is saved.
+The service starts and immediately runs a sync. Every 30 seconds after that, it runs again. Each sync cycle:
 
-Every step emits a structured JSON log line using the pino library. The log includes the correlation ID, the timestamp, the log level, and whatever fields are relevant to that step — attempt number, delay, row count, error message. This format can be shipped directly to any log aggregation system.
+1. Generates a UUID **correlation ID** attached to every log line and outgoing HTTP request header for that sync.
+2. Calls the warehouse API via an axios HTTP client wrapped in retry logic. `503` and `429` responses are retried with **exponential backoff** — 200 ms, 400 ms, 800 ms — up to a 10 s cap. **Jitter** is added so parallel instances don't retry in lockstep. `4xx` errors (bad request) are not retried.
+3. **Normalises** the response — the warehouse API is inconsistent and sometimes returns a bare array, sometimes wraps it in an object, and sometimes uses `"stock"` instead of `"quantity"`. Invalid rows are filtered out.
+4. Writes the cleaned data to PostgreSQL in a **single bulk transaction**. All rows are upserted — existing SKUs are updated, new ones are inserted. A rollback on failure guarantees no partial writes.
+5. Emits structured JSON log lines via **pino** at every step, including attempt number, delay, row count, and error messages.
 
-The scheduler that runs the sync has an overlap guard. If a sync takes longer than 30 seconds for any reason, the next scheduled tick is skipped rather than running a second sync in parallel.
+The scheduler has an **overlap guard** — if a sync takes longer than 30 seconds, the next tick is skipped instead of running a second sync in parallel.
 
-Task 2 — How It Works
+### Task 2 — React Dashboard
 
-The dashboard renders three panels side by side — Shipments, Fleet, and Weather. Each panel manages its own data independently using a custom React hook called useApiWithRetry. If the Fleet panel fails, the Shipments and Weather panels are completely unaffected.
+The dashboard renders three independent panels: Shipments, Fleet, and Weather. Each panel uses a custom `useApiWithRetry` hook. If one panel fails, the others are unaffected.
 
-When a panel mounts, the hook immediately starts a fetch. It generates a new correlation ID for that request and attaches it to the HTTP header and to every log line for that fetch cycle. If the request fails with a 5xx or 429 error, the hook retries with exponential backoff — 300ms, 600ms, 1200ms — up to a maximum of 3 retries. If all retries are exhausted, the panel moves to an error state and shows a Retry button. Clicking Retry runs a fresh foreground fetch.
+Each panel:
 
-The panel has three distinct visual states. Loading shows the text "Loading…" or "Loading — retry 2…" so the user knows a retry is in progress. Error shows the error message and a Retry button. Success shows the data along with the last-updated timestamp and a Refresh button.
+- Generates a correlation ID per fetch and attaches it to the HTTP header and every log line.
+- Retries on `5xx` / `429` with backoff — 300 ms, 600 ms, 1 200 ms — up to 3 retries.
+- Has three visual states: **Loading** (`"Loading…"` / `"Loading — retry 2…"`), **Error** (message + Retry button), **Success** (data + last-updated timestamp + Refresh button).
+- **Background refresh** — the Refresh button and the 15-second auto-refresh both keep existing data on screen while polling. If the background refresh fails, the old data stays visible with a soft warning. The panel never goes blank.
+- Uses an `AbortController` to cancel in-flight requests when a component unmounts or a new fetch starts.
+- Emits structured JSON to the browser console on every request, retry, success, and failure — with correlation IDs that match the mock backend's server-side logs.
 
-The Refresh button triggers a background fetch. Unlike a retry, a background fetch keeps the existing data on screen while silently polling for fresh data. If the background refresh fails, the old data stays visible and a soft warning is shown. The panel never goes blank just because a background refresh failed.
+---
 
-Each panel auto-refreshes every 15 seconds using the same background mode. The hook uses an AbortController so that if a component unmounts or a new fetch starts before the previous one finishes, the in-flight network request is cancelled immediately. This prevents stale responses from overwriting fresh data.
+## Technologies
 
-The hook's structured logger emits JSON to the browser console on every request started, retry, success, and failure. Each line includes the correlation ID, the URL, the attempt number, and the HTTP status. These IDs match the IDs that the mock backend logs on the server side, so you can trace a single request across both frontend and backend logs by searching for the same ID.
+| Layer | Technology |
+|---|---|
+| Backend sync service | Node.js, axios, pino, pg |
+| Mock backend | Express |
+| Frontend | React 18, Vite |
+| Testing | Vitest, Testing Library |
+| Database | PostgreSQL 16 |
+| Containers | Docker, Docker Compose |
 
-Technologies Used
+---
 
-Node.js is used for the backend sync service. Express is used for the mock backend that simulates the flaky microservices. axios is the HTTP client in Task 1. pino is the structured JSON logger in Task 1. pg is the PostgreSQL client. React 18 is used for the dashboard UI. Vite is the frontend build tool and dev server. Vitest is the test runner for both tasks. Testing Library is used to render and interact with React components in tests.
+## Running the Project
 
-How the Problems Were Solved
+### Option 1 — Docker Compose (recommended)
 
-The flaky API problem is solved by the retry-with-backoff pattern. The service never crashes on a 503 — it waits an increasing amount of time and tries again, up to a limit.
+Starts everything — PostgreSQL, mock backend, sync service, and dashboard — in one command. No local Node.js or PostgreSQL install required.
 
-The thundering herd problem — where many clients all retry at the same moment and flood the API — is solved by jitter. Each retry delay is randomized so retries are spread out naturally.
+```bash
+docker compose up --build
+```
 
-The partial database write problem is solved by wrapping all inserts in a single transaction. Either all rows are saved or none are.
+| Service | URL |
+|---|---|
+| Dashboard | http://localhost:5173 |
+| Mock backend API | http://localhost:4000 |
+| PostgreSQL | localhost:5432 |
 
-The dashboard panel isolation problem is solved by giving each panel its own independent hook instance. One failing service does not affect the others.
+To stop and remove containers:
 
-The blank screen during refresh problem is solved by the background fetch mode. Existing data stays visible until new data arrives successfully.
+```bash
+docker compose down
+```
 
-The traceability problem — not knowing which frontend request caused which backend log entry — is solved by correlation IDs. The same UUID travels from the browser through the HTTP header into the server log.
+To also delete the database volume:
 
-Running the Project
+```bash
+docker compose down -v
+```
 
-Start the mock backend first by running node server.js inside the mock-backend folder. It starts on port 4000. Then start the dashboard by running npm run dev inside task2-dashboard. It opens on port 5173 and proxies all API calls to the mock backend automatically. For Task 1, PostgreSQL must be running, the schema must be applied, and the .env file must be configured before running npm start inside task1-inventory-sync.
+---
 
-Tests and Coverage
+### Option 2 — Run locally (manual)
 
-Task 1 has 32 tests covering backoff logic, HTTP client retry behavior, database transactions, scheduler overlap prevention, warehouse API normalization, and the full sync cycle. Statement coverage is 98.76 percent.
+#### Prerequisites
 
-Task 2 has 21 tests covering the hook state machine, the required scenario of two 500 errors followed by a 200 on the third attempt, correlation ID propagation, background refresh behavior, component loading and error states, and manual retry recovery. Statement coverage is 96.82 percent.
+- Node.js 20+
+- PostgreSQL 16 running locally
 
-Both tasks exceed the required 80 percent coverage threshold.
+#### 1. Apply the database schema
+
+```bash
+psql -U postgres -d inventory -f task1-inventory-sync/schema.sql
+```
+
+#### 2. Configure Task 1 environment
+
+```bash
+cp task1-inventory-sync/.env.example task1-inventory-sync/.env
+```
+
+Edit `.env` if your database credentials differ from the defaults:
+
+```env
+WAREHOUSE_API_URL=http://localhost:4000
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/inventory
+POLL_INTERVAL_MS=30000
+LOG_LEVEL=info
+```
+
+#### 3. Start the mock backend
+
+```bash
+cd mock-backend
+npm install
+node server.js
+# Listening on port 4000
+```
+
+#### 4. Start the inventory sync service (Task 1)
+
+```bash
+cd task1-inventory-sync
+npm install
+npm start
+```
+
+#### 5. Start the dashboard (Task 2)
+
+```bash
+cd task2-dashboard
+npm install
+npm run dev
+# Open http://localhost:5173
+```
+
+The dashboard proxies all API calls to the mock backend automatically via the Vite dev server config.
+
+---
+
+## Tests and Coverage
+
+Run tests for each task from its directory:
+
+```bash
+# Task 1
+cd task1-inventory-sync && npm test
+
+# Task 2
+cd task2-dashboard && npm test
+```
+
+| Task | Tests | Statement coverage |
+|---|---|---|
+| Task 1 | 32 | 98.76% |
+| Task 2 | 21 | 96.82% |
+
+Both tasks exceed the required 80% threshold.
+
+**Task 1 coverage includes:** backoff logic, HTTP client retry behaviour, database transactions, scheduler overlap prevention, warehouse API normalisation, full sync cycle.
+
+**Task 2 coverage includes:** hook state machine, two 500 errors followed by a 200 on the third attempt, correlation ID propagation, background refresh behaviour, component loading and error states, manual retry recovery.
+
+---
+
+## How the Problems Were Solved
+
+| Problem | Solution |
+|---|---|
+| Flaky API (503 / 429) | Retry with exponential backoff — never crashes, just waits and tries again |
+| Thundering herd (all clients retry at once) | Jitter — each delay is randomised so retries are spread out |
+| Partial database writes | Single transaction — either all rows are saved or none are |
+| Dashboard panel isolation | Each panel has its own independent hook instance |
+| Blank screen during refresh | Background fetch mode — existing data stays visible until new data arrives |
+| Traceability across frontend and backend | Correlation IDs — the same UUID travels from the browser through the HTTP header into the server log |
