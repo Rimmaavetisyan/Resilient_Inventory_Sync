@@ -29,6 +29,28 @@ describe('createInventoryService.sync', () => {
     expect(logger.child).toHaveBeenCalledWith({ correlationId: 'fixed-cid' });
   });
 
+  it('warns and skips DB write when the API returns an empty payload', async () => {
+    const warehouseApi = {
+      fetchInventory: vi.fn().mockResolvedValue([]),
+    };
+    const repository = { upsertInventory: vi.fn() };
+    const logger = makeLogger();
+
+    const service = createInventoryService({
+      warehouseApi,
+      repository,
+      logger,
+      correlationIdFactory: () => 'cid-empty',
+    });
+
+    const result = await service.sync();
+
+    expect(result).toEqual({ ok: true, count: 0, correlationId: 'cid-empty' });
+    expect(repository.upsertInventory).not.toHaveBeenCalled();
+    expect(logger._child.warn).toHaveBeenCalledWith({ count: 0 }, 'sync_completed_empty_payload');
+    expect(logger._child.info).not.toHaveBeenCalledWith(expect.objectContaining({ count: 0 }), 'sync_completed');
+  });
+
   it('returns an error result (does not throw) when the warehouse call fails', async () => {
     const warehouseApi = { fetchInventory: vi.fn().mockRejectedValue(new Error('503 forever')) };
     const repository = { upsertInventory: vi.fn() };

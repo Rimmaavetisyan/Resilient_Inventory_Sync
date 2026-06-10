@@ -18,6 +18,9 @@ function isRetryable(err) {
 // `execute` useCallback and re-firing the load effect in an infinite loop.)
 const defaultNow = () => Date.now();
 
+// Unique ID for this tab so we never process our own BroadcastChannel messages.
+const TAB_ID = Math.random().toString(36).slice(2);
+
 /**
  * useApiWithRetry — fetches a URL with exponential backoff + jitter.
  *
@@ -98,9 +101,49 @@ export function useApiWithRetry(url, options = {}) {
     nowRef.current = now;
   });
 
+  // Holds the most recent data broadcast received from another tab.
+  const lastBroadcastRef = useRef(null);
+
+  // BroadcastChannel: receive data that another tab already fetched.
+  useEffect(() => {
+    if (!('BroadcastChannel' in globalThis)) return;
+    const ch = new BroadcastChannel(`api:${url}`);
+    ch.onmessage = ({ data: msg }) => {
+      if (msg.tabId === TAB_ID) return; // ignore own broadcasts
+      lastBroadcastRef.current = msg;
+      if (!stateRef.current.lastUpdated || msg.lastUpdated > stateRef.current.lastUpdated) {
+        safeSet({
+          status: 'success',
+          data: msg.data,
+          error: null,
+          attempt: 0,
+          lastUpdated: msg.lastUpdated,
+          isRefreshing: false,
+        });
+      }
+    };
+    return () => ch.close();
+  }, [url, safeSet]);
+
   const execute = useCallback(
     async ({ background = false } = {}) => {
       const doFetch = fetchRef.current || globalThis.fetch;
+
+      // If another tab broadcast fresh data within the last 5 seconds, use it
+      // directly and skip the network request entirely.
+      const broadcast = lastBroadcastRef.current;
+      if (broadcast && nowRef.current() - broadcast.lastUpdated < 5000) {
+        safeSet({
+          status: 'success',
+          data: broadcast.data,
+          error: null,
+          attempt: 0,
+          lastUpdated: broadcast.lastUpdated,
+          isRefreshing: false,
+        });
+        return broadcast.data;
+      }
+
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -148,14 +191,21 @@ export function useApiWithRetry(url, options = {}) {
             err.status = 422;
             throw err;
           }
+          const lastUpdated = nowRef.current();
           safeSet({
             status: 'success',
             data,
             error: null,
             attempt,
-            lastUpdated: nowRef.current(),
+            lastUpdated,
             isRefreshing: false,
           });
+          // Share the result with other open tabs so they skip their own fetch.
+          if ('BroadcastChannel' in globalThis) {
+            const ch = new BroadcastChannel(`api:${url}`);
+            ch.postMessage({ data, lastUpdated, tabId: TAB_ID });
+            ch.close();
+          }
           log.info({ attempt: attempt + 1, background: isBackground }, 'request_succeeded');
           return data;
         } catch (err) {
@@ -226,6 +276,21 @@ export function useApiWithRetry(url, options = {}) {
     }, refreshIntervalMs);
     return () => clearInterval(id);
   }, [execute, enabled, refreshIntervalMs]);
+
+  // Auto-retry when the browser comes back online.
+  useEffect(() => {
+    if (!enabled) return;
+    function handleOnline() {
+      const { status } = stateRef.current;
+      if (status === 'error') {
+        execute({ background: false }).catch(() => {});
+      } else {
+        execute({ background: true }).catch(() => {});
+      }
+    }
+    window.addEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [execute, enabled]);
 
   // retry: foreground (recover from error). refresh: background (live update).
   const retry = useCallback(() => execute({ background: false }).catch(() => {}), [execute]);
