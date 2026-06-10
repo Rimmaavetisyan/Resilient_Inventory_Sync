@@ -65,10 +65,12 @@ export function useApiWithRetry(url, options = {}) {
 
   // Guard against setting state after unmount.
   const mountedRef = useRef(true);
+  const abortRef = useRef(null);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      abortRef.current?.abort();
     };
   }, []);
 
@@ -99,6 +101,9 @@ export function useApiWithRetry(url, options = {}) {
   const execute = useCallback(
     async ({ background = false } = {}) => {
       const doFetch = fetchRef.current || globalThis.fetch;
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
       const correlationId = newCorrelationId();
       const log = loggerRef.current.child({ correlationId, url });
       // A "background" refresh only makes sense if we already have data to show.
@@ -122,6 +127,7 @@ export function useApiWithRetry(url, options = {}) {
       for (;;) {
         try {
           const res = await doFetch(url, {
+            signal: controller.signal,
             headers: {
               [CORRELATION_HEADER]: correlationId,
               Accept: 'application/json',
@@ -153,6 +159,7 @@ export function useApiWithRetry(url, options = {}) {
           log.info({ attempt: attempt + 1, background: isBackground }, 'request_succeeded');
           return data;
         } catch (err) {
+          if (err.name === 'AbortError') return;
           const canRetry = isRetryable(err) && attempt < maxRetries;
           if (!canRetry) {
             if (isBackground) {

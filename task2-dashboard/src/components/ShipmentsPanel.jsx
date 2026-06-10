@@ -1,7 +1,8 @@
+import { memo } from 'react';
 import { ServicePanel } from './ServicePanel.jsx';
 import { SERVICES } from '../config.js';
 
-export function ShipmentsPanel(props) {
+export const ShipmentsPanel = memo(function ShipmentsPanel(props) {
   return (
     <ServicePanel
       title="Shipments"
@@ -22,4 +23,4 @@ export function ShipmentsPanel(props) {
       }}
     />
   );
-}
+});

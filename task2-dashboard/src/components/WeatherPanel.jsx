@@ -1,7 +1,8 @@
+import { memo } from 'react';
 import { ServicePanel } from './ServicePanel.jsx';
 import { SERVICES } from '../config.js';
 
-export function WeatherPanel(props) {
+export const WeatherPanel = memo(function WeatherPanel(props) {
   return (
     <ServicePanel
       title="Weather"
@@ -16,4 +17,4 @@ export function WeatherPanel(props) {
       )}
     />
   );
-}
+});
