@@ -25,6 +25,12 @@ export function createInventoryService({
     try {
       const payload = await warehouseApi.fetchInventory(correlationId);
       const items = normalizeInventory(payload);
+
+      if (items.length === 0) {
+        log.warn({ count: 0 }, 'sync_completed_empty_payload');
+        return { ok: true, count: 0, correlationId };
+      }
+
       const count = await repository.upsertInventory(items, correlationId);
       log.info({ count }, 'sync_completed');
       return { ok: true, count, correlationId };

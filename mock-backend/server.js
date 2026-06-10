@@ -90,6 +90,15 @@ app.get('/api/weather', flaky(() => ({
   location: 'Berlin HQ',
 })));
 
+// --- Inventory (consumed by Task 1 sync service) --------------------------
+const SKUS = ['SKU-001', 'SKU-002', 'SKU-003', 'SKU-004', 'SKU-005'];
+app.get('/inventory', flaky(() => ({
+  products: SKUS.map((sku) => ({
+    sku,
+    stock: Math.floor(Math.random() * 500),
+  })),
+})));
+
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.listen(PORT, () => {
