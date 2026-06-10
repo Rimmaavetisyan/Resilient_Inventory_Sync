@@ -23,15 +23,15 @@ export function createInventoryRepository({ pool, logger }) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      for (const item of items) {
-        await client.query(
-          `INSERT INTO inventory (sku, quantity, updated_at)
-           VALUES ($1, $2, NOW())
-           ON CONFLICT (sku)
-           DO UPDATE SET quantity = EXCLUDED.quantity, updated_at = NOW()`,
-          [item.sku, item.quantity]
-        );
-      }
+      const placeholders = items.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2}, NOW())`).join(', ');
+      const params = items.flatMap((item) => [item.sku, item.quantity]);
+      await client.query(
+        `INSERT INTO inventory (sku, quantity, updated_at)
+         VALUES ${placeholders}
+         ON CONFLICT (sku)
+         DO UPDATE SET quantity = EXCLUDED.quantity, updated_at = NOW()`,
+        params
+      );
       await client.query('COMMIT');
       logger?.info({ correlationId, count: items.length }, 'inventory_upserted');
       return items.length;

@@ -26,7 +26,7 @@ export function createScheduler({ task, intervalMs, logger }) {
 
   function start() {
     logger?.info({ intervalMs }, 'scheduler_started');
-    tick(); // fire immediately on boot
+    tick().catch((err) => logger?.error({ error: err.message }, 'scheduler_tick_failed')); // fire immediately on boot
     timer = setInterval(tick, intervalMs);
     return timer;
   }
