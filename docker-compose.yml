@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: inventory
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./task1-inventory-sync/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d inventory"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mock-backend:
+    build:
+      context: ./mock-backend
+    environment:
+      PORT: 4000
+      FAILURE_RATE: "0.35"
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 4000"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  task1-sync:
+    build:
+      context: ./task1-inventory-sync
+    environment:
+      WAREHOUSE_API_URL: http://mock-backend:4000
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/inventory
+      POLL_INTERVAL_MS: "30000"
+      LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-backend:
+        condition: service_healthy
+    restart: on-failure
+
+  task2-dashboard:
+    build:
+      context: ./task2-dashboard
+    ports:
+      - "5173:80"
+    depends_on:
+      mock-backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

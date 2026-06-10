@@ -7,7 +7,10 @@
     "install:all": "npm --prefix mock-backend install && npm --prefix task2-dashboard install && npm --prefix task1-inventory-sync install",
     "mock": "npm --prefix mock-backend start",
     "dashboard": "npm --prefix task2-dashboard run dev",
-    "demo": "concurrently -n mock,dashboard -c green,cyan \"npm:mock\" \"npm:dashboard\""
+    "demo": "concurrently -n mock,dashboard -c green,cyan \"npm:mock\" \"npm:dashboard\"",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "docker:reset": "docker compose down -v --rmi all"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
